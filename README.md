@@ -101,6 +101,7 @@ https://github.com/perlin-network/noise
 
 
 # Students Contributions
+JL
 
 ## VGG_face_group FL application on GRING
 Federated Learning for face recognition with Kaggle VGG face2 dataset
