@@ -1,19 +1,20 @@
 package dual
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/git-disl/GRING"
-	"go.uber.org/zap"
-	"time"
-	"strings"
-	"sync"
-	"github.com/VictoriaMetrics/fastcache"
-	"bytes"
-	"encoding/json"
 	"math"
 	"math/rand"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/VictoriaMetrics/fastcache"
+	"github.com/git-disl/GRING"
+	"go.uber.org/zap"
 )
 
 //protocol opcode
@@ -1503,7 +1504,7 @@ func (p *Protocol) OnJoinGroup(msg P2pMessage) {
 
         // send upper leader if it meets the total
         if(p.report){
-            fmt.Printf("Report to publisher(%s) include me. num_members : %d+1, total expected : %d+1\n",p.GetLeader(),p.num_members,  p.GetTotMembers())
+            fmt.Printf("Report to publisher!!(%s) include me. num_members : %d+1, total expected : %d+1\n",p.GetLeader(),p.num_members,  p.GetTotMembers())
             msgctx, cancel := context.WithCancel(context.Background())
             //err := p.node.SendMessage(msgctx, p.GetLeader(), P2pMessage{Aggregation: uint32(p.num_members+1), Opcode: byte(OP_JOIN_GROUP), Contents: msg.Contents}, OP_JOIN_GROUP)
             err := p.node.SendMessage(msgctx, p.GetLeader(), P2pMessage{Aggregation: uint32(p.num_members+1), Opcode: byte(OP_JOIN_GROUP), Contents: aggregatedinfo}, OP_JOIN_GROUP)
