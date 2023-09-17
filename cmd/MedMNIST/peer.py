@@ -1,55 +1,59 @@
-import gc
-gc.disable()
-import os
-import sys
-import datetime
-import time
-import pickle
-import base64
-import numpy as np
-import json
-from ctypes import cdll
-import ctypes
-
-from tqdm import tqdm
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import io
-import modelnet
-import datasource
-import medmnist
 from medmnist import Evaluator
+import medmnist
+import datasource
+import modelnet
+import io
+import torch.optim as optim
+import torch.nn as nn
+import torch
+from tqdm import tqdm
+import ctypes
+from ctypes import cdll
+import json
+import numpy as np
+import base64
+import pickle
+import time
+import datetime
+import sys
+import os
+import gc
+import json
+gc.disable()
+
 
 client = None
 FUNC = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_char_p)
 FUNC2 = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
 
-#TODO : let Publisher set total training rounds
-NUM_GLOBAL_ROUNDS = 1
-NUM_LOCAL_EPOCHS = 1 # at each local node
+# TODO : let Publisher set total training rounds
+NUM_GLOBAL_ROUNDS = 2
+NUM_LOCAL_EPOCHS = 1  # at each local node
 
-#training variables  -------------
+# training variables  -------------
 lr = 0.001
 # ------------------------
 
 
-#to server
-OP_RECV                      = 0x00
-#OP_CLIENT_WAKE_UP            = 0x01 #obsolete
-OP_CLIENT_READY              = 0x02
-OP_CLIENT_UPDATE             = 0x03
-OP_CLIENT_EVAL               = 0x04
-#to client
-OP_INIT                      = 0x05
-OP_REQUEST_UPDATE            = 0x06
-OP_STOP_AND_EVAL             = 0x07
+# to server
+OP_RECV = 0x00
+# OP_CLIENT_WAKE_UP            = 0x01 #obsolete
+OP_CLIENT_READY = 0x02
+OP_CLIENT_UPDATE = 0x03
+OP_CLIENT_EVAL = 0x04
+# to client
+OP_INIT = 0x05
+OP_REQUEST_UPDATE = 0x06
+OP_STOP_AND_EVAL = 0x07
+
 
 def obj_to_pickle_string(x):
     return base64.b64encode(pickle.dumps(x))
 
+
 def pickle_string_to_obj(s):
     return pickle.loads(base64.b64decode(s, '-_'))
+
 
 class LocalModel(object):
     def __init__(self, model_config, datasource):
@@ -66,20 +70,26 @@ class LocalModel(object):
         self.model_config = model_config
         self.model_id = model_config['model_id']
 
-        self.model = modelnet.Net(in_channels=datasource.n_channels, num_classes=datasource.n_classes)
+        self.model = modelnet.Net(
+            in_channels=datasource.n_channels, num_classes=datasource.n_classes)
         self.datasource = datasource
         # define loss function and optimizer
         if datasource.task == "multi-label, binary-class":
             self.criterion = nn.BCEWithLogitsLoss()
         else:
             self.criterion = nn.CrossEntropyLoss()
-        self.optimizer =  optim.SGD(self.model.parameters(), lr=lr, momentum=0.9)
-	
+        self.optimizer = optim.SGD(
+            self.model.parameters(), lr=lr, momentum=0.9)
+
         self.current_weights = None
 
+        ##JL
         self.x_train = len(self.datasource.train_loader.dataset.imgs)
         self.x_valid = len(self.datasource.valid_loader.dataset.imgs)
         self.x_test = len(self.datasource.test_loader.dataset.imgs)
+        # self.x_train = len(self.datasource.train_loader.dataset)
+        # self.x_valid = len(self.datasource.valid_loader.dataset)
+        # self.x_test = len(self.datasource.test_loader.dataset)
 
         self.training_start_time = int(round(time.time()))
 
@@ -91,8 +101,8 @@ class LocalModel(object):
         self.model.load_state_dict(self.current_weights)
 
     def train_one_round(self):
-        train_losses=[]
-        train_accu=[]
+        train_losses = []
+        train_accu = []
         for epoch in range(NUM_LOCAL_EPOCHS):
             train_correct = 0
             train_total = 0
@@ -124,12 +134,12 @@ class LocalModel(object):
                     total += targets.size(0)
                     correct += predicted.eq(targets).sum().item()
 
-            train_loss=running_loss/len(self.datasource.train_loader)
-            accu=100.*correct/total
+            train_loss = running_loss/len(self.datasource.train_loader)
+            accu = 100.*correct/total
 
             train_accu.append(accu)
             train_losses.append(train_loss)
-            print('Train Loss: %.3f | Accuracy: %.3f'%(train_loss,accu))
+            print('Train Loss: %.3f | Accuracy: %.3f' % (train_loss, accu))
 
         return self.model.state_dict(), train_loss, accu
 
@@ -177,13 +187,14 @@ class LocalModel(object):
 
         return auc, acc
 
-    #TODO : sub-leader aggregation fix
+    # TODO : sub-leader aggregation fix
     def update_weights(self, client_weights, client_sizes):
         global_dict = self.model.state_dict()
         total_size = sum(client_sizes)
         n = len(client_weights)
         for k in global_dict.keys():
-            global_dict[k] = torch.stack([client_weights[i][k].float()*(n*client_sizes[i]/total_size) for i in range(len(client_weights))], 0).mean(0)
+            global_dict[k] = torch.stack([client_weights[i][k].float(
+            )*(n*client_sizes[i]/total_size) for i in range(len(client_weights))], 0).mean(0)
         self.model.load_state_dict(global_dict)
         self.current_weights = global_dict
 
@@ -191,23 +202,24 @@ class LocalModel(object):
         total_size = np.sum(client_sizes)
         # weighted sum
         aggr_auc = np.sum(client_aucs[i] / total_size * client_sizes[i]
-                for i in range(len(client_sizes)))
+                          for i in range(len(client_sizes)))
         aggr_acc = np.sum(client_accs[i] / total_size * client_sizes[i]
-                for i in range(len(client_sizes)))
+                          for i in range(len(client_sizes)))
         return aggr_auc, aggr_acc, total_size
 
     def aggregate_loss_acc(self, client_losses, client_accs, client_sizes):
         total_size = np.sum(client_sizes)
         # weighted sum
         aggr_loss = np.sum(client_losses[i] / total_size * client_sizes[i]
-                for i in range(len(client_sizes)))
+                           for i in range(len(client_sizes)))
         aggr_acc = np.sum(client_accs[i] / total_size * client_sizes[i]
-                for i in range(len(client_sizes)))
+                          for i in range(len(client_sizes)))
         return aggr_loss, aggr_acc, total_size
 
     def aggregate_train_loss_acc(self, client_losses, client_accs, client_sizes, cur_round):
         cur_time = int(round(time.time())) - self.training_start_time
-        aggr_loss, aggr_acc, aggr_size = self.aggregate_loss_acc(client_losses, client_accs, client_sizes)
+        aggr_loss, aggr_acc, aggr_size = self.aggregate_loss_acc(
+            client_losses, client_accs, client_sizes)
 
         self.train_losses += [[cur_round, cur_time, aggr_loss]]
         self.train_accs += [[cur_round, cur_time, aggr_acc]]
@@ -217,7 +229,8 @@ class LocalModel(object):
 
     def aggregate_valid_auc_acc(self, client_aucs, client_accs, client_sizes, cur_round):
         cur_time = int(round(time.time())) - self.training_start_time
-        aggr_auc, aggr_acc, aggr_size = self.aggregate_auc_acc(client_aucs, client_accs, client_sizes)
+        aggr_auc, aggr_acc, aggr_size = self.aggregate_auc_acc(
+            client_aucs, client_accs, client_sizes)
         self.valid_aucs += [[cur_round, cur_time, aggr_auc]]
         self.valid_accs += [[cur_round, cur_time, aggr_acc]]
         with open('stats.txt', 'w') as outfile:
@@ -232,12 +245,15 @@ class LocalModel(object):
             "valid_acc": self.valid_accs
         }
 
+
 class FederatedClient(object):
-    MIN_NUM_WORKERS = 0 #total from this branch. This will be set by grouping protocol during grouping
+    # total from this branch. This will be set by grouping protocol during grouping
+    MIN_NUM_WORKERS = 0
+
     def __init__(self, host, port, bootaddr):
         self.local_model = None
 
-        # You may want to have IID or non-IID setting based on number of your peers 
+        # You may want to have IID or non-IID setting based on number of your peers
         # by default, this code brings all dataset
         self.datasource = datasource.MedMNIST()
 
@@ -246,25 +262,28 @@ class FederatedClient(object):
         self.eval_client_updates = []
 
         self.port = int(port)
- 
+
         print("p2p init")
         self.lib = cdll.LoadLibrary('./GRING_plugin.so')
         self.lib.Init_p2p.restype = ctypes.c_char_p
-        self.lib.Fedcomp_GR.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_byte]
-        self.lib.Report_GR.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_byte, ctypes.c_int]
+        self.lib.Fedcomp_GR.argtypes = [
+            ctypes.c_char_p, ctypes.c_int, ctypes.c_byte]
+        self.lib.Report_GR.argtypes = [
+            ctypes.c_char_p, ctypes.c_int, ctypes.c_byte, ctypes.c_int]
+        
 
         self.register_handles()
-        self.lib.Init_p2p(host.encode('utf-8'),int(port), int(0), bootaddr.encode('utf-8'))
+        self.lib.Init_p2p(host.encode('utf-8'), int(port),
+                          int(0), bootaddr.encode('utf-8'))
 
         self.lib.Bootstrapping(bootaddr.encode('utf-8'))
-
 
     def register_handles(self):
 
         def on_set_num_client(num):
             print('APP : on set_num_client')
             self.MIN_NUM_WORKERS = num
-            print('APP : set MIN_NUM_WORKERS ',self.MIN_NUM_WORKERS)
+            print('APP : set MIN_NUM_WORKERS ', self.MIN_NUM_WORKERS)
 
         def on_init_subleader(data):
             print('APP : on init_subleader')
@@ -274,7 +293,7 @@ class FederatedClient(object):
             self.local_model.set_weights(model_config['model'])
 
             self.lib.IncreaseNumClientReady()
-            
+
         def on_init_worker(data):
             print('APP : on init_worker')
             model_config = pickle_string_to_obj(data)
@@ -296,9 +315,10 @@ class FederatedClient(object):
             self.local_model.set_weights(model_config['model'])
 
             # TODO : need to fix
-            #buf = io.BytesIO()
-            #torch.save(self.local_model.current_weights, buf)
-            torch.save(self.local_model.current_weights, 'current_local'+str(self.port)+'.model')
+            # buf = io.BytesIO()
+            # torch.save(self.local_model.current_weights, buf)
+            torch.save(self.local_model.current_weights,
+                       'current_local'+str(self.port)+'.model')
             with open('current_local'+str(self.port)+'.model', "rb") as fd:
                 buf = io.BytesIO(fd.read())
 
@@ -308,7 +328,7 @@ class FederatedClient(object):
                 'model_id': model_config['model_id']
             }
             sdata = obj_to_pickle_string(metadata)
-            self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata),OP_INIT)
+            self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata), OP_INIT)
 
         def on_train_my_model(arg):
             # train my model
@@ -324,7 +344,35 @@ class FederatedClient(object):
             print("diff(sec) : " + str(diff.seconds)+str("\n"))
             self.lib.RecordMyTrainTime(diff.seconds)
 
-        #subleader handler
+            #JL save to Initiator.json 
+            # Assuming self.port contains the port number
+            json_filename = f"peer{self.port}.json"
+
+            try:
+                # Try to open the JSON file to load existing data
+                with open(json_filename, "r") as json_file:
+                    existing_data = json.load(json_file)
+            except FileNotFoundError:
+                # If the file doesn't exist, initialize with an empty list
+                existing_data = []
+
+            # Create a dictionary for the current round
+            round_data = {
+                "role": "Initiator",
+                "round_number": self.current_round,
+                "train_loss": train_loss,
+                "train_acc": train_acc
+            }
+
+            # Append the current round's data to the existing list
+            existing_data.append(round_data)
+
+            # Write the updated data list back to the JSON file
+            with open(json_filename, "w") as json_file:
+                json.dump(existing_data, json_file, indent=2)
+            # End
+
+        # subleader handler
         def on_client_update_subleader(data):
             print('APP : on client_update_subleader \n')
             data = pickle_string_to_obj(data)
@@ -334,12 +382,12 @@ class FederatedClient(object):
                 data['weights'] = torch.load(data['weights'])
                 self.current_round_client_updates += [data]
 
-        #initiator handler
+        # initiator handler
         def on_client_update_initiator(data):
             print('on client_update_initiator\n')
             data = pickle_string_to_obj(data)
-            #filehandle = open("run.log", "a")
-            #filehandle.write ('on client_update: datasize :' + str(sys.getsizeof(data))+'\n')
+            # filehandle = open("run.log", "a")
+            # filehandle.write ('on client_update: datasize :' + str(sys.getsizeof(data))+'\n')
 
             # gather updates from members
             if data['round_number'] == self.current_round:
@@ -358,25 +406,28 @@ class FederatedClient(object):
                 [x['train_size'] for x in self.current_round_client_updates],
                 self.current_round
             )
-            #filehandle = open("run.log", "a")
-            #filehandle.write("aggr_train_loss"+str(aggr_train_loss)+'\n')
-            #filehandle.write("aggr_train_acc"+str(aggr_train_acc)+'\n')
-            #filehandle.close()
+            # filehandle = open("run.log", "a")
+            # filehandle.write("aggr_train_loss"+str(aggr_train_loss)+'\n')
+            # filehandle.write("aggr_train_acc"+str(aggr_train_acc)+'\n')
+            # filehandle.close()
 
             if 'valid_auc' in self.current_round_client_updates[0]:
                 aggr_valid_auc, aggr_valid_acc = self.local_model.aggregate_valid_auc_acc(
-                [x['valid_auc'] for x in self.current_round_client_updates],
-                [x['valid_acc'] for x in self.current_round_client_updates],
-                [x['valid_size'] for x in self.current_round_client_updates],
-                self.current_round
+                    [x['valid_auc']
+                        for x in self.current_round_client_updates],
+                    [x['valid_acc']
+                        for x in self.current_round_client_updates],
+                    [x['valid_size']
+                        for x in self.current_round_client_updates],
+                    self.current_round
                 )
-                #filehandle = open("run.log", "a")
-                #filehandle.write("aggr_valid_aucs"+str(aggr_valid_aucs)+'\n')
-                #filehandle.write("aggr_valid_acc"+str(aggr_valid_acc)+'\n')
-                #filehandle.close()
+                # filehandle = open("run.log", "a")
+                # filehandle.write("aggr_valid_aucs"+str(aggr_valid_aucs)+'\n')
+                # filehandle.write("aggr_valid_acc"+str(aggr_valid_acc)+'\n')
+                # filehandle.close()
 
-	    #TODO : this comment is for test. remove later. we need to stop when it converges.
-            #if self.local_model.prev_train_loss is not None and \
+            # TODO : this comment is for test. remove later. we need to stop when it converges.
+            # if self.local_model.prev_train_loss is not None and \
             #        (self.local_model.prev_train_loss - aggr_train_loss) / self.local_model.prev_train_loss < .01:
             #    # converges
             #    filehandle = open("run.log", "a")
@@ -384,12 +435,13 @@ class FederatedClient(object):
             #    filehandle.close()
             #    self.stop_and_eval()
             #    return
-            #self.local_model.prev_train_loss = aggr_train_loss
+            # self.local_model.prev_train_loss = aggr_train_loss
 
             # TODO : need to fix
-            #buf = io.BytesIO()
-            #torch.save(self.local_model.current_weights, buf)
-            torch.save(self.local_model.current_weights, 'current_local'+str(self.port)+'.model')
+            # buf = io.BytesIO()
+            # torch.save(self.local_model.current_weights, buf)
+            torch.save(self.local_model.current_weights,
+                       'current_local'+str(self.port)+'.model')
             with open('current_local'+str(self.port)+'.model', "rb") as fd:
                 buf = io.BytesIO(fd.read())
 
@@ -405,8 +457,10 @@ class FederatedClient(object):
                 }
 
                 sresp = obj_to_pickle_string(resp)
-                print('send CLIENT_UPDATE to publisher, msg payload size:' + str(sys.getsizeof(sresp)) + '\n' )
-                self.lib.Report_GR(sresp, sys.getsizeof(sresp), OP_CLIENT_UPDATE, 0)
+                print('send CLIENT_UPDATE to publisher, msg payload size:' +
+                      str(sys.getsizeof(sresp)) + '\n')
+                self.lib.Report_GR(sresp, sys.getsizeof(
+                    sresp), OP_CLIENT_UPDATE, 0)
 
                 # send stop and eval request to members
                 self.stop_and_eval()
@@ -430,13 +484,48 @@ class FederatedClient(object):
                     'train_acc': aggr_train_acc,
                 }
                 sresp = obj_to_pickle_string(resp)
-                print('send CLIENT_UPDATE to publisher, msg payload size:' + str(sys.getsizeof(sresp)) + '\n' )
-                self.lib.Report_GR(sresp, sys.getsizeof(sresp), OP_CLIENT_UPDATE, 0)
+                print('send CLIENT_UPDATE to publisher, msg payload size:' +
+                      str(sys.getsizeof(sresp)) + '\n')
+                self.lib.Report_GR(sresp, sys.getsizeof(
+                    sresp), OP_CLIENT_UPDATE, 0)
 
                 # send request updates to the members
-                self.train_next_round()
+                # self.train_next_round()
+
+                #JL on_train_next_round()
+                print("on_client_update_initiator->on_train_next_round")
+                self.current_round += 1
+                # buffers all client updates
+                self.current_round_client_updates = []
+
+                # filehandle = open("run.log", "a")
+                # filehandle.write("### Round "+str(self.current_round)+"###\n")
+                print("### Round "+str(self.current_round)+"###\n")
+                # filehandle.close()
+
+                # TODO : need to fix
+                # buf = io.BytesIO()
+                # torch.save(self.local_model.current_weights, buf)
+                torch.save(self.local_model.current_weights,
+                        'current_local'+str(self.port)+'.model')
+                with open('current_local'+str(self.port)+'.model', "rb") as fd:
+                    buf = io.BytesIO(fd.read())
+
+                metadata = {
+                    'model_id': self.local_model.model_id,
+                    'round_number': self.current_round,
+                    'current_weights': buf
+                }
+                sdata = obj_to_pickle_string(metadata)
+                # self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata), OP_REQUEST_UPDATE)
+                # print("request_update sent\n")
+
+                # JL
+                self.lib.Regroup(sdata, sys.getsizeof(sdata), self.current_round)
+                print("Regroup finished\n")
 
                 start = datetime.datetime.now()
+                ########End
 
                 # train my model
                 self.local_model.current_weights, train_loss, train_acc = self.local_model.train_one_round()
@@ -446,7 +535,8 @@ class FederatedClient(object):
 
                 end = datetime.datetime.now()
                 diff = end - start
-                print("diff(sec) : " + str(diff.seconds)+str("\n"))
+                print("449-peer.py, Why ned train initaor after train_next_round in on_client_update_done_initiator diff(sec) : " +
+                      str(diff.seconds)+str("\n"))
                 self.lib.RecordMyTrainTime(diff.seconds)
 
         # subleader handler
@@ -459,11 +549,11 @@ class FederatedClient(object):
             self.current_round = data['round_number']
             print("round_number : "+str(data['round_number'])+"\n")
 
-            #filehandle = open("run.log", "a")
-            #filehandle.write ('on request_update received data size :' +str(sys.getsizeof(args)) + '\n')
+            # filehandle = open("run.log", "a")
+            # filehandle.write ('on request_update received data size :' +str(sys.getsizeof(args)) + '\n')
             start = datetime.datetime.now()
-            #filehandle.writelines("start : " + str(start)+str("\n"))
-            #filehandle.close()
+            # filehandle.writelines("start : " + str(start)+str("\n"))
+            # filehandle.close()
 
             # train my model
             self.local_model.set_weights(data['current_weights'])
@@ -483,9 +573,43 @@ class FederatedClient(object):
                 'train_acc': train_acc,
                 'train_size': self.local_model.x_train,
             }
-            #filehandle = open("run.log", "a")
-            #filehandle.write ('train_loss' + str(train_loss) + '\n' )
-            #filehandle.write ('train_acc' + str(train_acc) + '\n' )
+            # filehandle = open("run.log", "a")
+            # filehandle.write ('train_loss' + str(train_loss) + '\n' )
+            # filehandle.write ('train_acc' + str(train_acc) + '\n' )
+
+            #JL save to Subleader.json 
+            # Assuming self.port contains the port number
+            json_filename = f"peer{self.port}.json"
+
+            try:
+                # Try to open the JSON file to load existing data
+                with open(json_filename, "r") as json_file:
+                    existing_data = json.load(json_file)
+            except FileNotFoundError:
+                # If the file doesn't exist, initialize with an empty list
+                existing_data = []
+
+            # Extract the specific fields from resp
+            round_number = resp['round_number']
+            train_loss = resp['train_loss']
+            train_acc = resp['train_acc']
+
+            # Create a dictionary for the current round
+            round_data = {
+                "role": "Subleader",
+                "round_number": round_number,
+                "train_loss": train_loss,
+                "train_acc": train_acc
+            }
+
+            # Append the current round's data to the existing list
+            existing_data.append(round_data)
+
+            # Write the updated data list back to the JSON file
+            with open(json_filename, "w") as json_file:
+                json.dump(existing_data, json_file, indent=2)
+            # End
+
 
             self.current_round_client_updates += [resp]
 
@@ -497,11 +621,11 @@ class FederatedClient(object):
             self.current_round = data['round_number']
             print("round_number : "+str(data['round_number'])+"\n")
 
-            #filehandle = open("run.log", "a")
-            #filehandle.write ('on request_update received data size :' +str(sys.getsizeof(args)) + '\n')
-            #start = datetime.datetime.now()
-            #filehandle.writelines("start : " + str(start)+str("\n"))
-            #filehandle.close()
+            # filehandle = open("run.log", "a")
+            # filehandle.write ('on request_update received data size :' +str(sys.getsizeof(args)) + '\n')
+            # start = datetime.datetime.now()
+            # filehandle.writelines("start : " + str(start)+str("\n"))
+            # filehandle.close()
 
             start = datetime.datetime.now()
 
@@ -514,16 +638,17 @@ class FederatedClient(object):
             print("diff(sec) : " + str(diff.seconds)+str("\n"))
             self.lib.RecordMyTrainTime(diff.seconds)
 
-            #filehandle = open("run.log", "a")
-            #filehandle.writelines("end : " + str(end)+str("\n"))
-            #filehandle.writelines("diff(s) : " + str(diff.seconds)+str("\n"))
-            #filehandle.writelines("diff(us) : " + str(diff.microseconds)+str("\n"))
-            #filehandle.close()
+            # filehandle = open("run.log", "a")
+            # filehandle.writelines("end : " + str(end)+str("\n"))
+            # filehandle.writelines("diff(s) : " + str(diff.seconds)+str("\n"))
+            # filehandle.writelines("diff(us) : " + str(diff.microseconds)+str("\n"))
+            # filehandle.close()
 
             # TODO : need to fix
-            #buf = io.BytesIO()
-            #torch.save(self.local_model.current_weights, buf)
-            torch.save(self.local_model.current_weights, 'current_local'+str(self.port)+'.model')
+            # buf = io.BytesIO()
+            # torch.save(self.local_model.current_weights, buf)
+            torch.save(self.local_model.current_weights,
+                       'current_local'+str(self.port)+'.model')
             with open('current_local'+str(self.port)+'.model', "rb") as fd:
                 buf = io.BytesIO(fd.read())
 
@@ -535,32 +660,71 @@ class FederatedClient(object):
                 'train_loss': train_loss,
                 'train_acc': train_acc,
             }
-            #filehandle = open("run.log", "a")
-            #filehandle.write ('train_loss' + str(train_loss) + '\n' )
-            #filehandle.write ('train_acc' + str(train_acc) + '\n' )
 
-            #print('start validate')
-            #valid_auc, valid_acc = self.local_model.validate()
-            #resp['valid_auc'] = valid_auc
-            #resp['valid_acc'] = valid_acc
 
-            #filehandle.write ('valid_auc' + str(valid_auc) + '\n' )
-            #filehandle.write ('valid_acc' + str(valid_acc) + '\n' )
-            #filehandle.close()
+            # filehandle = open("run.log", "a")
+            # filehandle.write ('train_loss' + str(train_loss) + '\n' )
+            # filehandle.write ('train_acc' + str(train_acc) + '\n' )
+
+            # print('start validate')
+            # valid_auc, valid_acc = self.local_model.validate()
+            # resp['valid_auc'] = valid_auc
+            # resp['valid_acc'] = valid_acc
+
+            # filehandle.write ('valid_auc' + str(valid_auc) + '\n' )
+            # filehandle.write ('valid_acc' + str(valid_acc) + '\n' )
+            # filehandle.close()
+
+            #JL save to Worker.json 
+            # Assuming self.port contains the port number
+            json_filename = f"peer{self.port}.json"
+
+            try:
+                # Try to open the JSON file to load existing data
+                with open(json_filename, "r") as json_file:
+                    existing_data = json.load(json_file)
+            except FileNotFoundError:
+                # If the file doesn't exist, initialize with an empty list
+                existing_data = []
+
+            # Extract the specific fields from resp
+            round_number = resp['round_number']
+            train_loss = resp['train_loss']
+            train_acc = resp['train_acc']
+
+            # Create a dictionary for the current round
+            round_data = {
+                "role": "Worker",
+                "round_number": round_number,
+                "train_loss": train_loss,
+                "train_acc": train_acc
+            }
+
+            # Append the current round's data to the existing list
+            existing_data.append(round_data)
+
+            # Write the updated data list back to the JSON file
+            with open(json_filename, "w") as json_file:
+                json.dump(existing_data, json_file, indent=2)
+            # End
+
+
 
             sresp = obj_to_pickle_string(resp)
-            print('send CLIENT_UPDATE to upper leader train_size:' +str(resp['train_size']) + '\n' )
-            self.lib.Report_GR(sresp, sys.getsizeof(sresp), OP_CLIENT_UPDATE, 1)
+            print('send CLIENT_UPDATE to upper leader train_size:' +
+                  str(resp['train_size']) + '\n')
+            self.lib.Report_GR(sresp, sys.getsizeof(
+                sresp), OP_CLIENT_UPDATE, 1)
 
         # sub-leader handler
         def on_stop_and_eval_subleader(data):
             data = pickle_string_to_obj(data)
             print('APP : on stop_and_eval_subleader')
-            #filehandle = open("run.log", "a")
-            #filehandle.write ('on stop_and_eval received data size :' +str(sys.getsizeof(args)) + '\n')
+            # filehandle = open("run.log", "a")
+            # filehandle.write ('on stop_and_eval received data size :' +str(sys.getsizeof(args)) + '\n')
 
-            #filehandle.write ('send CLIENT_EVAL to size:' + str(sys.getsizeof(sresp)) + '\n' )
-            #filehandle.close()
+            # filehandle.write ('send CLIENT_EVAL to size:' + str(sys.getsizeof(sresp)) + '\n' )
+            # filehandle.close()
 
             self.local_model.set_weights(data['current_weights'])
             test_auc, test_acc = self.local_model.evaluate()
@@ -579,8 +743,8 @@ class FederatedClient(object):
         def on_stop_and_eval_worker(data):
             print('APP : on stop_and_eval')
             data = pickle_string_to_obj(data)
-            #filehandle = open("run.log", "a")
-            #filehandle.write ('on stop_and_eval received data size :' +str(sys.getsizeof(args)) + '\n')
+            # filehandle = open("run.log", "a")
+            # filehandle.write ('on stop_and_eval received data size :' +str(sys.getsizeof(args)) + '\n')
 
             self.local_model.set_weights(data['current_weights'])
             test_auc, test_acc = self.local_model.evaluate()
@@ -589,25 +753,25 @@ class FederatedClient(object):
                 'test_auc': test_auc,
                 'test_acc': test_acc
             }
-            #filehandle.write ('send CLIENT_EVAL size:' + str(sys.getsizeof(sresp)) + '\n' )
-            #filehandle.close()
+            # filehandle.write ('send CLIENT_EVAL size:' + str(sys.getsizeof(sresp)) + '\n' )
+            # filehandle.close()
             sdata = obj_to_pickle_string(resp)
             print('APP : on stop_and_eval: report')
             self.lib.Report_GR(sdata, sys.getsizeof(sdata), OP_CLIENT_EVAL, 1)
 
         def on_client_eval_subleader(data):
             data = pickle_string_to_obj(data)
-            print ('APP : on client_eval_subleader\n')
+            print('APP : on client_eval_subleader\n')
 
             if self.eval_client_updates is None:
                 return
 
             self.eval_client_updates += [data]
 
-        #initiator handler
+        # initiator handler
         def on_client_eval_initiator(data):
             data = pickle_string_to_obj(data)
-            print ('APP : on client_eval\n')
+            print('APP : on client_eval\n')
 
             if self.eval_client_updates is None:
                 return
@@ -616,27 +780,28 @@ class FederatedClient(object):
 
         def on_client_eval_done_initiator(arg):
             aggr_test_auc, aggr_test_acc, aggr_test_size = self.local_model.aggregate_auc_acc(
-            [x['test_auc'] for x in self.eval_client_updates],
-            [x['test_acc'] for x in self.eval_client_updates],
-            [x['test_size'] for x in self.eval_client_updates],
-            );
+                [x['test_auc'] for x in self.eval_client_updates],
+                [x['test_acc'] for x in self.eval_client_updates],
+                [x['test_size'] for x in self.eval_client_updates],
+            )
             filehandle = open("run.log", "a")
-            filehandle.write("\nfinal aggr_test_auc : "+str(aggr_test_auc)+'\n')
+            filehandle.write("\nfinal aggr_test_auc : " +
+                             str(aggr_test_auc)+'\n')
             filehandle.write("final aggr_test_acc : "+str(aggr_test_acc)+'\n')
             filehandle.write("== done ==\n")
             print("== done ==\n")
             print("\nfinal aggr_test_auc : "+str(aggr_test_auc)+'\n')
             print("final aggr_test_acc : "+str(aggr_test_acc)+'\n')
-            #self.end = int(round(time.time()))
-            #filehandle.write("end : " + str(self.end)+'\n')
-            #print("end : " + str(self.end)+'\n')
-            #filehandle.write("diff : " + str(self.end - self.start)+'\n')
-            #print("diff : " + str(self.end - self.start)+'\n')
-            #filehandle.write("== done ==\n")
-            #filehandle.close()
-            #self.eval_client_updates = None  # special value, forbid evaling again
+            # self.end = int(round(time.time()))
+            # filehandle.write("end : " + str(self.end)+'\n')
+            # print("end : " + str(self.end)+'\n')
+            # filehandle.write("diff : " + str(self.end - self.start)+'\n')
+            # print("diff : " + str(self.end - self.start)+'\n')
+            # filehandle.write("== done ==\n")
+            # filehandle.close()
+            # self.eval_client_updates = None  # special value, forbid evaling again
 
-            #report to publisher
+            # report to publisher
             resp = {
                 'test_size': aggr_test_size,
                 'test_auc': aggr_test_auc,
@@ -646,7 +811,7 @@ class FederatedClient(object):
             self.lib.Report_GR(sdata, sys.getsizeof(sdata), OP_CLIENT_EVAL, 0)
 
         def on_report_client_update(aggregation_num):
-            print( "APP : report client update\n") 
+            print("APP : report client update\n")
             print(len(self.current_round_client_updates))
             print(self.current_round_client_updates[-1]['train_size'])
             self.local_model.update_weights(
@@ -661,9 +826,10 @@ class FederatedClient(object):
             )
 
             # TODO : need to fix
-            #buf = io.BytesIO()
-            #torch.save(self.local_model.current_weights, buf)
-            torch.save(self.local_model.current_weights, 'current_local'+str(self.port)+'.model')
+            # buf = io.BytesIO()
+            # torch.save(self.local_model.current_weights, buf)
+            torch.save(self.local_model.current_weights,
+                       'current_local'+str(self.port)+'.model')
             with open('current_local'+str(self.port)+'.model', "rb") as fd:
                 buf = io.BytesIO(fd.read())
 
@@ -678,32 +844,40 @@ class FederatedClient(object):
 
             if 'valid_auc' in self.current_round_client_updates[0]:
                 aggr_valid_auc, aggr_valid_acc = self.local_model.aggregate_valid_auc_acc(
-                [x['valid_auc'] for x in self.current_round_client_updates],
-                [x['valid_acc'] for x in self.current_round_client_updates],
-                [x['valid_size'] for x in self.current_round_client_updates],
-                self.current_round
+                    [x['valid_auc']
+                        for x in self.current_round_client_updates],
+                    [x['valid_acc']
+                        for x in self.current_round_client_updates],
+                    [x['valid_size']
+                        for x in self.current_round_client_updates],
+                    self.current_round
                 )
                 resp['valid_auc'] = aggr_valid_auc
                 resp['valid_acc'] = aggr_valid_acc
- 
-            sresp = obj_to_pickle_string(resp)
-            print('send CLIENT_UPDATE to server, msg payload size:' + str(sys.getsizeof(sresp)) + '\n' )
-            self.lib.Report_GR(sresp, sys.getsizeof(sresp), OP_CLIENT_UPDATE, aggregation_num)
 
+            sresp = obj_to_pickle_string(resp)
+            print('send CLIENT_UPDATE to server, msg payload size:' +
+                  str(sys.getsizeof(sresp)) + '\n')
+            self.lib.Report_GR(sresp, sys.getsizeof(
+                sresp), OP_CLIENT_UPDATE, aggregation_num)
+
+        #when Initate all node, I1 execute this
         def on_train_next_round(arg):
+            print("on_train_next_round() start\n")
             self.current_round += 1
             # buffers all client updates
             self.current_round_client_updates = []
 
-            #filehandle = open("run.log", "a")
-            #filehandle.write("### Round "+str(self.current_round)+"###\n")
+            # filehandle = open("run.log", "a")
+            # filehandle.write("### Round "+str(self.current_round)+"###\n")
             print("### Round "+str(self.current_round)+"###\n")
-            #filehandle.close()
+            # filehandle.close()
 
             # TODO : need to fix
-            #buf = io.BytesIO()
-            #torch.save(self.local_model.current_weights, buf)
-            torch.save(self.local_model.current_weights, 'current_local'+str(self.port)+'.model')
+            # buf = io.BytesIO()
+            # torch.save(self.local_model.current_weights, buf)
+            torch.save(self.local_model.current_weights,
+                       'current_local'+str(self.port)+'.model')
             with open('current_local'+str(self.port)+'.model', "rb") as fd:
                 buf = io.BytesIO(fd.read())
 
@@ -713,133 +887,186 @@ class FederatedClient(object):
                 'current_weights': buf
             }
             sdata = obj_to_pickle_string(metadata)
-            self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata), OP_REQUEST_UPDATE)
-            print("request_update sent\n")
+            # self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata), OP_REQUEST_UPDATE)
+            # print("request_update sent\n")
+
+            # JL
+            self.lib.Regroup(sdata, sys.getsizeof(sdata), self.current_round)
+            print("Regroup finished\n")
 
         def on_report_client_eval(aggregation_num):
             aggr_test_auc, aggr_test_acc, aggr_test_size = self.local_model.aggregate_auc_acc(
                 [x['test_auc'] for x in self.eval_client_updates],
                 [x['test_acc'] for x in self.eval_client_updates],
                 [x['test_size'] for x in self.eval_client_updates],
-            );
+            )
             self.eval_client_updates = None  # special value, forbid evaling again
             resp = {
                 'test_size': aggr_test_size,
                 'test_auc': aggr_test_auc,
                 'test_acc': aggr_test_acc
             }
-            #filehandle.write ('send CLIENT_EVAL size:' + str(sys.getsizeof(sresp)) + '\n' )
-            #filehandle.close()
+            # filehandle.write ('send CLIENT_EVAL size:' + str(sys.getsizeof(sresp)) + '\n' )
+            # filehandle.close()
             sdata = obj_to_pickle_string(resp)
-            self.lib.Report_GR(sdata, sys.getsizeof(sdata), OP_CLIENT_EVAL, aggregation_num)
+            self.lib.Report_GR(sdata, sys.getsizeof(
+                sdata), OP_CLIENT_EVAL, aggregation_num)
+            
+        def on_start_train(data):
+            print('APP : on_start_train\n')
+
+            data = pickle_string_to_obj(data)
+            self.current_round = data['round_number']
+            # buffers all client updates
+
+            self.current_round_client_updates = []
+
+            self.local_model.set_weights(data['current_weights'])
+
+         
+            print("### Round "+str(self.current_round)+"###\n")
+
+
+            torch.save(self.local_model.current_weights,
+                    'current_local'+str(self.port)+'.model')
+            with open('current_local'+str(self.port)+'.model', "rb") as fd:
+                buf = io.BytesIO(fd.read())
+
+            metadata = {
+                'model_id': self.local_model.model_id,
+                'round_number': self.current_round,
+                'current_weights': buf,
+            }
+            sdata = obj_to_pickle_string(metadata)
+            self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata), OP_REQUEST_UPDATE)
+            print("request_update sent\n")
+
+
 
         global onsetnumclient
         onsetnumclient = FUNC2(on_set_num_client)
-        fnname="on_set_num_client"
-        self.lib.Register_callback(fnname.encode('utf-8'),onsetnumclient)
+        fnname = "on_set_num_client"
+        self.lib.Register_callback(fnname.encode('utf-8'), onsetnumclient)
 
         global onglobalmodel
         onglobalmodel = FUNC(on_global_model)
-        fnname="on_global_model"
-        self.lib.Register_callback(fnname.encode('utf-8'),onglobalmodel)
+        fnname = "on_global_model"
+        self.lib.Register_callback(fnname.encode('utf-8'), onglobalmodel)
 
         global oninitworker
         oninitworker = FUNC(on_init_worker)
-        fnname="on_init_worker"
-        self.lib.Register_callback(fnname.encode('utf-8'),oninitworker)
+        fnname = "on_init_worker"
+        self.lib.Register_callback(fnname.encode('utf-8'), oninitworker)
 
         global oninitsubleader
         oninitsubleader = FUNC(on_init_subleader)
-        fnname="on_init_subleader"
-        self.lib.Register_callback(fnname.encode('utf-8'),oninitsubleader)
+        fnname = "on_init_subleader"
+        self.lib.Register_callback(fnname.encode('utf-8'), oninitsubleader)
 
         global onrequestupdateworker
         onrequestupdateworker = FUNC(on_request_update_worker)
-        fnname="on_request_update_worker"
-        self.lib.Register_callback(fnname.encode('utf-8'),onrequestupdateworker)
+        fnname = "on_request_update_worker"
+        self.lib.Register_callback(
+            fnname.encode('utf-8'), onrequestupdateworker)
 
         global onrequestupdatesubleader
         onrequestupdatesubleader = FUNC(on_request_update_subleader)
-        fnname="on_request_update_subleader"
-        self.lib.Register_callback(fnname.encode('utf-8'),onrequestupdatesubleader)
+        fnname = "on_request_update_subleader"
+        self.lib.Register_callback(fnname.encode(
+            'utf-8'), onrequestupdatesubleader)
 
         global onstopandevalworker
         onstopandevalworker = FUNC(on_stop_and_eval_worker)
-        fnname="on_stop_and_eval_worker"
-        self.lib.Register_callback(fnname.encode('utf-8'),onstopandevalworker)
+        fnname = "on_stop_and_eval_worker"
+        self.lib.Register_callback(fnname.encode('utf-8'), onstopandevalworker)
 
         global onstopandevalsubleader
         onstopandevalsubleader = FUNC(on_stop_and_eval_subleader)
-        fnname="on_stop_and_eval_subleader"
-        self.lib.Register_callback(fnname.encode('utf-8'),onstopandevalsubleader)
+        fnname = "on_stop_and_eval_subleader"
+        self.lib.Register_callback(
+            fnname.encode('utf-8'), onstopandevalsubleader)
 
         global onclientupdatesubleader
         onclientupdatesubleader = FUNC(on_client_update_subleader)
-        fnname="on_clientupdate_subleader"
-        self.lib.Register_callback(fnname.encode('utf-8'),onclientupdatesubleader)
+        fnname = "on_clientupdate_subleader"
+        self.lib.Register_callback(fnname.encode(
+            'utf-8'), onclientupdatesubleader)
 
         global onclientupdateinitiator
         onclientupdateinitiator = FUNC(on_client_update_initiator)
-        fnname="on_clientupdate_initiator"
-        self.lib.Register_callback(fnname.encode('utf-8'),onclientupdateinitiator)
+        fnname = "on_clientupdate_initiator"
+        self.lib.Register_callback(fnname.encode(
+            'utf-8'), onclientupdateinitiator)
 
         global onclientupdatedoneinitiator
         onclientupdatedoneinitiator = FUNC(on_client_update_done_initiator)
-        fnname="on_clientupdatedone_initiator"
-        self.lib.Register_callback(fnname.encode('utf-8'),onclientupdatedoneinitiator)
+        fnname = "on_clientupdatedone_initiator"
+        self.lib.Register_callback(fnname.encode(
+            'utf-8'), onclientupdatedoneinitiator)
 
         global onclientevalsubleader
         onclientevalsubleader = FUNC(on_client_eval_subleader)
-        fnname="on_clienteval_subleader"
-        self.lib.Register_callback(fnname.encode('utf-8'),onclientevalsubleader)
+        fnname = "on_clienteval_subleader"
+        self.lib.Register_callback(
+            fnname.encode('utf-8'), onclientevalsubleader)
 
         global onclientevalinitiator
         onclientevalinitiator = FUNC(on_client_eval_initiator)
-        fnname="on_clienteval_initiator"
-        self.lib.Register_callback(fnname.encode('utf-8'),onclientevalinitiator)
+        fnname = "on_clienteval_initiator"
+        self.lib.Register_callback(
+            fnname.encode('utf-8'), onclientevalinitiator)
 
         global onclientevaldoneinitiator
         onclientevaldoneinitiator = FUNC(on_client_eval_done_initiator)
-        fnname="on_clientevaldone_initiator"
-        self.lib.Register_callback(fnname.encode('utf-8'),onclientevaldoneinitiator)
+        fnname = "on_clientevaldone_initiator"
+        self.lib.Register_callback(fnname.encode(
+            'utf-8'), onclientevaldoneinitiator)
 
         global onreportclientupdate
         onreportclientupdate = FUNC2(on_report_client_update)
-        fnname="on_report_client_update"
-        self.lib.Register_callback(fnname.encode('utf-8'),onreportclientupdate)
+        fnname = "on_report_client_update"
+        self.lib.Register_callback(
+            fnname.encode('utf-8'), onreportclientupdate)
 
         global ontrainnextround
         ontrainnextround = FUNC(on_train_next_round)
-        fnname="on_train_next_round"
-        self.lib.Register_callback(fnname.encode('utf-8'),ontrainnextround)
+        fnname = "on_train_next_round"
+        self.lib.Register_callback(fnname.encode('utf-8'), ontrainnextround)
 
         global onreportclienteval
         onreportclienteval = FUNC2(on_report_client_eval)
-        fnname="on_report_client_eval"
-        self.lib.Register_callback(fnname.encode('utf-8'),onreportclienteval)
+        fnname = "on_report_client_eval"
+        self.lib.Register_callback(fnname.encode('utf-8'), onreportclienteval)
 
         global ontrainmymodel
         ontrainmymodel = FUNC(on_train_my_model)
-        fnname="on_train_my_model"
-        self.lib.Register_callback(fnname.encode('utf-8'),ontrainmymodel)
+        fnname = "on_train_my_model"
+        self.lib.Register_callback(fnname.encode('utf-8'), ontrainmymodel)
 
+        global onstarttrain
+        onstarttrain = FUNC(on_start_train)
+        fnname = "on_start_train"
+        self.lib.Register_callback(fnname.encode('utf-8'), onstarttrain)
 
-    #internal function
+    # internal function
     # Note: we assume that during training the #workers will be >= MIN_NUM_WORKERS
+
     def train_next_round(self):
+        print("train_next_round!\n")
         self.current_round += 1
         # buffers all client updates
         self.current_round_client_updates = []
 
-        #filehandle = open("run.log", "a")
-        #filehandle.write("### Round "+str(self.current_ro(und)+"###\n")
+        # filehandle = open("run.log", "a")
+        # filehandle.write("### Round "+str(self.current_ro(und)+"###\n")
         print("### Round "+str(self.current_round)+"###\n")
-        #filehandle.close()
+        # filehandle.close()
 
         # TODO : need to fix
-        #buf = io.BytesIO()
-        #torch.save(self.local_model.current_weights, buf)
-        torch.save(self.local_model.current_weights, 'current_local'+str(self.port)+'.model')
+        # buf = io.BytesIO()
+        # torch.save(self.local_model.current_weights, buf)
+        torch.save(self.local_model.current_weights,
+                   'current_local'+str(self.port)+'.model')
         with open('current_local'+str(self.port)+'.model', "rb") as fd:
             buf = io.BytesIO(fd.read())
 
@@ -856,9 +1083,10 @@ class FederatedClient(object):
         self.eval_client_updates = []
 
         # TODO : need to fix
-        #buf = io.BytesIO()
-        #torch.save(self.local_model.current_weights, buf)
-        torch.save(self.local_model.current_weights, 'current_local'+str(self.port)+'.model')
+        # buf = io.BytesIO()
+        # torch.save(self.local_model.current_weights, buf)
+        torch.save(self.local_model.current_weights,
+                   'current_local'+str(self.port)+'.model')
         with open('current_local'+str(self.port)+'.model', "rb") as fd:
             buf = io.BytesIO(fd.read())
 
@@ -869,7 +1097,8 @@ class FederatedClient(object):
         sdata = obj_to_pickle_string(metadata)
         self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata), OP_STOP_AND_EVAL)
 
-#global client
+
+# global client
 if __name__ == "__main__":
     filehandle = open("run.log", "w")
     filehandle.write("running client \n")
@@ -878,8 +1107,7 @@ if __name__ == "__main__":
     client = FederatedClient(sys.argv[1], sys.argv[2], sys.argv[3])
 
     # If you use run.sh to launch many peer nodes, you should comment below line
-    #client.lib.Input()
+    # client.lib.Input()
     # Instead use this to block the process
     while True:
         pass
-    

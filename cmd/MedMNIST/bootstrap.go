@@ -4,32 +4,33 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"github.com/git-disl/GRING"
-	"github.com/git-disl/GRING/dual"
 	"io"
+	"net"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
-	"net"
+
+	"github.com/git-disl/GRING"
+	"github.com/git-disl/GRING/dual"
 	"go.uber.org/zap"
-	"strconv"
-	"runtime"
 )
 
 // printedLength is the total prefix length of a public key associated to a chat users ID.
 const printedLength = 8
 
 var (
-        node *GRING.Node
-	overlay *dual.Protocol
-	events dual.Events
-	max_peers=100
-	max_conn=1000
+	node             *GRING.Node
+	overlay          *dual.Protocol
+	events           dual.Events
+	max_peers        = 100
+	max_conn         = 1000
 	discoverInterval = 30 //sec
 )
 
 type chatMessage struct {
-	Opcode byte
+	Opcode   byte
 	Contents []byte
 }
 
@@ -48,12 +49,12 @@ func check(err error) {
 	}
 }
 
-func init_p2p(host string, port int, publicIP string){
-        var err error
+func init_p2p(host string, port int, publicIP string) {
+	var err error
 
 	//fmt.Printf("host : %s port : %d \n",host,port)
 
-        logger, _ := zap.NewProduction()
+	logger, _ := zap.NewProduction()
 	// Create a new configured node.
 	node, err = GRING.NewNode(
 		GRING.WithNodeBindHost(net.ParseIP(host)),
@@ -61,62 +62,62 @@ func init_p2p(host string, port int, publicIP string){
 		GRING.WithNodeAddress(publicIP),
 		GRING.WithNodeMaxRecvMessageSize(1<<24), //16MB
 		GRING.WithNodeMaxInboundConnections(uint(max_conn)),
-                GRING.WithNodeMaxOutboundConnections(uint(max_conn)),
+		GRING.WithNodeMaxOutboundConnections(uint(max_conn)),
 		GRING.WithNodeLogger(logger),
 	)
 	check(err)
 
 	// Register the chatMessage Go type to the node with an associated unmarshal function.
-        node.RegisterMessage(chatMessage{}, unmarshalChatMessage)
+	node.RegisterMessage(chatMessage{}, unmarshalChatMessage)
 
 	// Instantiate dual.
 	events = dual.Events{
-	        OnPeerAdmitted_bc: func(id GRING.ID) {
-	                fmt.Printf("bootstrap : a new peer %s(%s).\n", id.Address, id.ID.String()[:printedLength])
-	        },
+		OnPeerAdmitted_bc: func(id GRING.ID) {
+			fmt.Printf("bootstrap : a new peer %s(%s).\n", id.Address, id.ID.String()[:printedLength])
+		},
 		OnPeerEvicted: func(id GRING.ID) {
 			//fmt.Printf("Forgotten a peer %s(%s).\n", id.Address, id.ID.String()[:printedLength])
 		},
 	}
 
 	overlay = dual.New(dual.WithProtocolEvents(events),
-	                   dual.WithProtocolMaxNeighborsBC(max_peers),)
+		dual.WithProtocolMaxNeighborsBC(max_peers))
 
 	// Bind dual to the node.
 	node.Bind(overlay.Protocol())
 
-        //fmt.Printf("start listen\n")
+	//fmt.Printf("start listen\n")
 	// Have the node start listening for new peers.
 	check(node.Listen())
 
 	// Print out the nodes ID and a help message comprised of commands.
 	//help(node)
 
-        //go startPeriodicDiscover()
+	//go startPeriodicDiscover()
 
-        fmt.Printf("init done\n")
+	fmt.Printf("init done\n")
 }
 
 func startPeriodicDiscover() {
-        var len_peers int
+	var len_peers int
 
 	for {
-	    time.Sleep(time.Duration(discoverInterval) * time.Second)
-            len_peers = len(overlay.Table_bc().KEntries(max_peers))
-	    if len_peers < max_peers {
-	        ids := overlay.DiscoverRandom(false)
-	        var str []string
-	        for _, id := range ids {
-		    str = append(str, fmt.Sprintf("%s(%s)", id.Address, id.ID.String()[:printedLength]))
-	        }
-/*
-	        if len(ids) > 0 {
-		    fmt.Printf("Discovered %d peer(s): [%v]\n", len(ids), strings.Join(str, ", "))
-	        } else {
-		    fmt.Printf("Did not discover any peers.\n")
-	        }
-*/
-	    }
+		time.Sleep(time.Duration(discoverInterval) * time.Second)
+		len_peers = len(overlay.Table_bc().KEntries(max_peers))
+		if len_peers < max_peers {
+			ids := overlay.DiscoverRandom(false)
+			var str []string
+			for _, id := range ids {
+				str = append(str, fmt.Sprintf("%s(%s)", id.Address, id.ID.String()[:printedLength]))
+			}
+			/*
+				        if len(ids) > 0 {
+					    fmt.Printf("Discovered %d peer(s): [%v]\n", len(ids), strings.Join(str, ", "))
+				        } else {
+					    fmt.Printf("Did not discover any peers.\n")
+				        }
+			*/
+		}
 	}
 }
 
@@ -138,7 +139,7 @@ func Input() {
 			continue
 		}
 
-                fmt.Printf(line)
+		fmt.Printf(line)
 		chat(line)
 	}
 }
@@ -186,24 +187,22 @@ func chat(line string) {
 }
 
 func main() {
-        // args[0] = host IP 
-        // args[1] = host Port 
+	// args[0] = host IP
+	// args[1] = host Port
 	// args[2] = host Public Address(IP:Port) if host IP is private and behind NAT
-        runtime.GOMAXPROCS(runtime.NumCPU())
-        args := os.Args[1:]
-        port, err := strconv.Atoi(args[1])
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	args := os.Args[1:]
+	port, err := strconv.Atoi(args[1])
 	if err != nil {
-	    // Add code here to handle the error!
+		// Add code here to handle the error!
 	}
 
 	if len(args) > 2 {
-            init_p2p(string(args[0]), port, string(args[2]))
-        }else{
-            init_p2p(string(args[0]), port, "")
-        }
+		init_p2p(string(args[0]), port, string(args[2]))
+	} else {
+		init_p2p(string(args[0]), port, "")
+	}
 
-        // block here
-        Input() // simulation many bench on the same physical node causes error on stdin
+	// block here
+	Input() // simulation many bench on the same physical node causes error on stdin
 }
-
-

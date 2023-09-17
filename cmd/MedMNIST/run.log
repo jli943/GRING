@@ -1,1 +1,5 @@
 running client 
+
+final aggr_test_auc : 0.9609339196233844
+final aggr_test_acc : 0.7857938718662952
+== done ==
