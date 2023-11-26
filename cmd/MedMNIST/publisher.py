@@ -155,6 +155,34 @@ class FLServer(object):
  
             self.global_model.prev_train_loss = data['train_loss']
 
+            file_path = 'output/globalModel.json'
+
+                # Check if the file exists
+            if os.path.exists(file_path):
+                # Read the existing content
+                with open(file_path, 'r') as file:
+                    existing_data = json.load(file)
+            else:
+                # If the file doesn't exist, initialize with an empty list
+                existing_data = []
+
+            # Append the new data to the existing content
+            new_entry = {
+                'round': self.current_round,
+                'acc': data['train_acc'],
+                'loss': data['train_loss']
+                # Add more fields as needed
+            }
+
+            existing_data.append(new_entry)
+
+            # Write the updated content back to the file
+            with open(file_path, 'w') as file:
+                json.dump(existing_data, file)
+
+
+
+
         def on_client_eval_done_publisher(data):
             print ('on client_eval_done_publisher\n')
             data = pickle_string_to_obj(data)

@@ -2,7 +2,7 @@
 #client.lib.Input() in peer.py
 #Input() in peer.go
 
-NUM_NODES=6
+NUM_NODES=4
 START_ADDR=127.0.0.1
 START_PORT=8001
 BOOTSTRAP_ADDR=127.0.0.1

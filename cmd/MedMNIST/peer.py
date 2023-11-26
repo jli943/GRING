@@ -19,6 +19,8 @@ import sys
 import os
 import gc
 import json
+import threading
+import logging
 gc.disable()
 
 
@@ -29,6 +31,7 @@ FUNC2 = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
 # TODO : let Publisher set total training rounds
 NUM_GLOBAL_ROUNDS = 2
 NUM_LOCAL_EPOCHS = 1  # at each local node
+PARTITION = 100
 
 # training variables  -------------
 lr = 0.001
@@ -83,13 +86,15 @@ class LocalModel(object):
 
         self.current_weights = None
 
-        ##JL
-        self.x_train = len(self.datasource.train_loader.dataset.imgs)
-        self.x_valid = len(self.datasource.valid_loader.dataset.imgs)
-        self.x_test = len(self.datasource.test_loader.dataset.imgs)
-        # self.x_train = len(self.datasource.train_loader.dataset)
-        # self.x_valid = len(self.datasource.valid_loader.dataset)
-        # self.x_test = len(self.datasource.test_loader.dataset)
+        # JL
+        # self.x_train = len(self.datasource.train_loader.dataset.imgs)
+        # self.x_valid = len(self.datasource.valid_loader.dataset.imgs)
+        # self.x_test = len(self.datasource.test_loader.dataset.imgs)
+
+        # 10.31
+        self.x_train = len(self.datasource.train_loader.dataset)
+        self.x_valid = len(self.datasource.valid_loader.dataset)
+        self.x_test = len(self.datasource.test_loader.dataset)
 
         self.training_start_time = int(round(time.time()))
 
@@ -124,7 +129,13 @@ class LocalModel(object):
                     loss = self.criterion(outputs, targets)
                 else:
                     targets = targets.squeeze().long()
+
+                    # JL
                     loss = self.criterion(outputs, targets)
+                    # outputs_copy = outputs.detach().clone()
+                    # loss = self.criterion(outputs_copy, targets)
+
+                    torch.autograd.set_detect_anomaly(True)
 
                     loss.backward()
                     self.optimizer.step()
@@ -257,6 +268,9 @@ class FederatedClient(object):
         # by default, this code brings all dataset
         self.datasource = datasource.MedMNIST()
 
+        # 10.31
+        self.datasource.partitioned_by_rows(PARTITION)
+
         self.current_round = 0
         self.current_round_client_updates = []
         self.eval_client_updates = []
@@ -270,7 +284,6 @@ class FederatedClient(object):
             ctypes.c_char_p, ctypes.c_int, ctypes.c_byte]
         self.lib.Report_GR.argtypes = [
             ctypes.c_char_p, ctypes.c_int, ctypes.c_byte, ctypes.c_int]
-        
 
         self.register_handles()
         self.lib.Init_p2p(host.encode('utf-8'), int(port),
@@ -341,16 +354,20 @@ class FederatedClient(object):
             end = datetime.datetime.now()
 
             diff = end - start
-            print("diff(sec) : " + str(diff.seconds)+str("\n"))
+            print("diff(sec) : " + str(diff.seconds) + str("\n"))
             self.lib.RecordMyTrainTime(diff.seconds)
 
-            #JL save to Initiator.json 
+            # JL save to Initiator.json
             # Assuming self.port contains the port number
             json_filename = f"peer{self.port}.json"
 
+            # Specify the path to the "output/" folder and the filename
+            output_path = "output"
+            json_filepath = os.path.join(output_path, json_filename)
+
             try:
                 # Try to open the JSON file to load existing data
-                with open(json_filename, "r") as json_file:
+                with open(json_filepath, "r") as json_file:
                     existing_data = json.load(json_file)
             except FileNotFoundError:
                 # If the file doesn't exist, initialize with an empty list
@@ -368,7 +385,7 @@ class FederatedClient(object):
             existing_data.append(round_data)
 
             # Write the updated data list back to the JSON file
-            with open(json_filename, "w") as json_file:
+            with open(json_filepath, "w") as json_file:
                 json.dump(existing_data, json_file, indent=2)
             # End
 
@@ -492,28 +509,28 @@ class FederatedClient(object):
                 # send request updates to the members
                 # self.train_next_round()
 
-                #JL on_train_next_round()
+                # JL on_train_next_round()
                 print("on_client_update_initiator->on_train_next_round")
-                self.current_round += 1
+                # self.current_round += 1
                 # buffers all client updates
                 self.current_round_client_updates = []
 
                 # filehandle = open("run.log", "a")
                 # filehandle.write("### Round "+str(self.current_round)+"###\n")
-                print("### Round "+str(self.current_round)+"###\n")
+                # print("### Round "+str(self.current_round)+"###\n")
                 # filehandle.close()
 
                 # TODO : need to fix
                 # buf = io.BytesIO()
                 # torch.save(self.local_model.current_weights, buf)
                 torch.save(self.local_model.current_weights,
-                        'current_local'+str(self.port)+'.model')
+                           'current_local'+str(self.port)+'.model')
                 with open('current_local'+str(self.port)+'.model', "rb") as fd:
                     buf = io.BytesIO(fd.read())
 
                 metadata = {
                     'model_id': self.local_model.model_id,
-                    'round_number': self.current_round,
+                    'round_number': self.current_round+1,
                     'current_weights': buf
                 }
                 sdata = obj_to_pickle_string(metadata)
@@ -521,13 +538,14 @@ class FederatedClient(object):
                 # print("request_update sent\n")
 
                 # JL
-                self.lib.Regroup(sdata, sys.getsizeof(sdata), self.current_round)
+                self.lib.Regroup(sdata, sys.getsizeof(
+                    sdata), self.current_round+1)
                 print("Regroup finished\n")
 
                 start = datetime.datetime.now()
-                ########End
+                # End
 
-                # train my model
+                # Check - train my model
                 self.local_model.current_weights, train_loss, train_acc = self.local_model.train_one_round()
 
                 # increase update done counter
@@ -577,13 +595,15 @@ class FederatedClient(object):
             # filehandle.write ('train_loss' + str(train_loss) + '\n' )
             # filehandle.write ('train_acc' + str(train_acc) + '\n' )
 
-            #JL save to Subleader.json 
+            # JL save to Subleader.json
             # Assuming self.port contains the port number
             json_filename = f"peer{self.port}.json"
+            output_path = "output"
+            json_filepath = os.path.join(output_path, json_filename)
 
             try:
                 # Try to open the JSON file to load existing data
-                with open(json_filename, "r") as json_file:
+                with open(json_filepath, "r") as json_file:
                     existing_data = json.load(json_file)
             except FileNotFoundError:
                 # If the file doesn't exist, initialize with an empty list
@@ -606,10 +626,9 @@ class FederatedClient(object):
             existing_data.append(round_data)
 
             # Write the updated data list back to the JSON file
-            with open(json_filename, "w") as json_file:
+            with open(json_filepath, "w") as json_file:
                 json.dump(existing_data, json_file, indent=2)
             # End
-
 
             self.current_round_client_updates += [resp]
 
@@ -661,7 +680,6 @@ class FederatedClient(object):
                 'train_acc': train_acc,
             }
 
-
             # filehandle = open("run.log", "a")
             # filehandle.write ('train_loss' + str(train_loss) + '\n' )
             # filehandle.write ('train_acc' + str(train_acc) + '\n' )
@@ -675,13 +693,15 @@ class FederatedClient(object):
             # filehandle.write ('valid_acc' + str(valid_acc) + '\n' )
             # filehandle.close()
 
-            #JL save to Worker.json 
+            # JL save to Worker.json
             # Assuming self.port contains the port number
             json_filename = f"peer{self.port}.json"
+            output_path = "output"
+            json_filepath = os.path.join(output_path, json_filename)
 
             try:
                 # Try to open the JSON file to load existing data
-                with open(json_filename, "r") as json_file:
+                with open(json_filepath, "r") as json_file:
                     existing_data = json.load(json_file)
             except FileNotFoundError:
                 # If the file doesn't exist, initialize with an empty list
@@ -704,11 +724,9 @@ class FederatedClient(object):
             existing_data.append(round_data)
 
             # Write the updated data list back to the JSON file
-            with open(json_filename, "w") as json_file:
+            with open(json_filepath, "w") as json_file:
                 json.dump(existing_data, json_file, indent=2)
             # End
-
-
 
             sresp = obj_to_pickle_string(resp)
             print('send CLIENT_UPDATE to upper leader train_size:' +
@@ -861,16 +879,18 @@ class FederatedClient(object):
             self.lib.Report_GR(sresp, sys.getsizeof(
                 sresp), OP_CLIENT_UPDATE, aggregation_num)
 
-        #when Initate all node, I1 execute this
+        # when Initate all node, I1 execute this
         def on_train_next_round(arg):
             print("on_train_next_round() start\n")
-            self.current_round += 1
+
+            #11.4 round
+            # self.current_round += 1
             # buffers all client updates
             self.current_round_client_updates = []
 
             # filehandle = open("run.log", "a")
             # filehandle.write("### Round "+str(self.current_round)+"###\n")
-            print("### Round "+str(self.current_round)+"###\n")
+            # print("### Round "+str(self.current_round)+"###\n")
             # filehandle.close()
 
             # TODO : need to fix
@@ -883,7 +903,7 @@ class FederatedClient(object):
 
             metadata = {
                 'model_id': self.local_model.model_id,
-                'round_number': self.current_round,
+                'round_number': self.current_round+1,
                 'current_weights': buf
             }
             sdata = obj_to_pickle_string(metadata)
@@ -891,7 +911,7 @@ class FederatedClient(object):
             # print("request_update sent\n")
 
             # JL
-            self.lib.Regroup(sdata, sys.getsizeof(sdata), self.current_round)
+            self.lib.Regroup(sdata, sys.getsizeof(sdata), self.current_round+1)
             print("Regroup finished\n")
 
         def on_report_client_eval(aggregation_num):
@@ -911,24 +931,23 @@ class FederatedClient(object):
             sdata = obj_to_pickle_string(resp)
             self.lib.Report_GR(sdata, sys.getsizeof(
                 sdata), OP_CLIENT_EVAL, aggregation_num)
-            
+
         def on_start_train(data):
             print('APP : on_start_train\n')
 
             data = pickle_string_to_obj(data)
             self.current_round = data['round_number']
+            
             # buffers all client updates
 
             self.current_round_client_updates = []
 
             self.local_model.set_weights(data['current_weights'])
 
-         
             print("### Round "+str(self.current_round)+"###\n")
 
-
             torch.save(self.local_model.current_weights,
-                    'current_local'+str(self.port)+'.model')
+                       'current_local'+str(self.port)+'.model')
             with open('current_local'+str(self.port)+'.model', "rb") as fd:
                 buf = io.BytesIO(fd.read())
 
@@ -941,7 +960,44 @@ class FederatedClient(object):
             self.lib.Fedcomp_GR(sdata, sys.getsizeof(sdata), OP_REQUEST_UPDATE)
             print("request_update sent\n")
 
+        # JL
+        global file_lock
+        file_lock = threading.Lock()
 
+        def on_generate_leader(leader):
+            global file_lock
+
+            try:
+                logging.info("on_generate_leader python side")
+
+                # Assuming self.port contains the port number
+                # json_filename = "relationship.json"
+                json_filename = f"relationship{self.port}.json"
+                output_path = "output"
+                json_filepath = os.path.join(output_path, json_filename)
+
+                # Create a dictionary for the current leader information
+                leader_data = {
+                    "leader": leader,
+                    "self": self.port
+                    # "round": self.current_round
+                }
+
+                with file_lock:
+                    if os.path.exists(json_filepath):
+                        # with open(json_filepath, "r") as json_file:
+                        #     existing_data = json.load(json_file)
+                        existing_data = []
+                    else:
+                        existing_data = []
+
+                    existing_data.append(leader_data)
+
+                    with open(json_filepath, "w") as json_file:
+                        json.dump(existing_data, json_file, indent=2)
+
+            except Exception as e:
+                logging.error(f"Error in on_generate_leader: {e}")
 
         global onsetnumclient
         onsetnumclient = FUNC2(on_set_num_client)
@@ -1047,6 +1103,12 @@ class FederatedClient(object):
         onstarttrain = FUNC(on_start_train)
         fnname = "on_start_train"
         self.lib.Register_callback(fnname.encode('utf-8'), onstarttrain)
+
+        # JL
+        global ongenerateleader
+        ongenerateleader = FUNC2(on_generate_leader)
+        fnname = "on_generate_leader"
+        self.lib.Register_callback(fnname.encode('utf-8'), ongenerateleader)
 
     # internal function
     # Note: we assume that during training the #workers will be >= MIN_NUM_WORKERS

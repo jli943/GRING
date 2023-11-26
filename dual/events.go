@@ -60,4 +60,7 @@ type Events struct {
 	OnSelectPeers func(pubSubList map[string]Subscriber, nextRound int) map[string]Subscriber
 
 	OnStartTrainOneRound func(modelMetaData []byte)
+
+	//JL
+	OnGenerateRelationship func()
 }

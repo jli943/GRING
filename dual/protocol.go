@@ -848,6 +848,11 @@ func (p *Protocol) Handle(ctx GRING.HandlerContext) error {
 			p.SetLeader(regroup_data.Publisher)
 			p.SetID(ID_INITIATOR)
 
+			//JL
+			if p.events.OnGenerateRelationship != nil {
+				p.events.OnGenerateRelationship()
+			}
+
 			//set pubSubList
 			p.pubSubList = regroup_data.Peers
 
@@ -895,6 +900,13 @@ func (p *Protocol) Handle(ctx GRING.HandlerContext) error {
 
 			p.SetID(ID_INITIATOR)
 			//fmt.Printf("I am : %d (1:initiator, 2:subleader, 3:worker)\n",p.GetID())
+
+			//JL
+			if p.events.OnGenerateRelationship != nil {
+			
+				p.events.OnGenerateRelationship()
+			}
+
 			if p.events.OnRequestGroup != nil {
 				p.events.OnRequestGroup(msg)
 			} else {
@@ -916,6 +928,12 @@ func (p *Protocol) Handle(ctx GRING.HandlerContext) error {
 
 			p.SetID(ID_SUBLEADER)
 			//fmt.Printf("I am : %d (1:initiator, 2:subleader, 3:worker)\n",p.GetID())
+
+			//JL
+			if p.events.OnGenerateRelationship != nil {
+				p.events.OnGenerateRelationship()
+			}
+
 			if p.events.OnRequestGroupSub != nil {
 				p.events.OnRequestGroupSub(msg)
 			} else {
@@ -938,6 +956,12 @@ func (p *Protocol) Handle(ctx GRING.HandlerContext) error {
 
 			p.SetID(ID_WORKER)
 			//fmt.Printf("I am : %d (1:initiator, 2:subleader, 3:worker)\n",p.GetID())
+
+			//JL
+			if p.events.OnGenerateRelationship != nil {
+				p.events.OnGenerateRelationship()
+			}
+
 			if p.events.OnRequestJoin != nil {
 				p.events.OnRequestJoin(msg)
 			} else {

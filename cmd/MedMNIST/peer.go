@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -32,6 +33,8 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+	"log"
+	"io/ioutil"
 
 	"github.com/git-disl/GRING"
 	"github.com/git-disl/GRING/dual"
@@ -134,6 +137,9 @@ type ops struct {
 	on_reqglobalmodel             C.convert
 	on_clientupdatedone_publisher C.convert
 	on_clientevaldone_publisher   C.convert
+
+	//JL
+	on_generateleader C.convert
 }
 
 var (
@@ -439,6 +445,11 @@ func Register_callback(name *C.char, fn C.convert) {
 		callbacks.on_starttrain = fn
 	}
 
+	//JL
+	if C.GoString(name) == "on_generate_leader" {
+		callbacks.on_generateleader = fn
+	}
+
 	//publisher
 	if C.GoString(name) == "on_reqglobalmodel" {
 		//fmt.Printf("on_reqglobalmodel registered\n")
@@ -626,12 +637,153 @@ func sendAD() {
 	overlay.Gossip_BC(uuid, admsg.Marshal(), list, dual.MSG_TYPE_ADMSG, GRING.ID{})
 }
 
+type LogEntry struct {
+	Round     int       `json:"round"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 func on_group_done(p2pmsg dual.P2pMessage) {
 	fmt.Printf("Receive OP_JOIN_GROUP value : %d\n", p2pmsg.Aggregation)
 	duration := time.Since(starttime)
-	fmt.Printf("DONE Grouping %d peers time:%s\n", p2pmsg.Aggregation, duration)
+	fmt.Printf("DONE Grouping %d peers time:%s in round: %d.\n", p2pmsg.Aggregation, duration, current_round)
+
+	// Record log entry
+	logEntry := LogEntry{
+		Round:     current_round,
+		Timestamp: time.Now(),
+	}
+
+	// Open the file in append mode or create if it doesn't exist
+	file, err := os.OpenFile("output/grouplog.json", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	// Encode the log entry as JSON and write to the file
+	encoder := json.NewEncoder(file)
+	err = encoder.Encode(logEntry)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	processRelationships(current_round)
+	
 	current_round = current_round + 1
 }
+
+type EdgeClient struct {
+	Round  int      `json:"round"`
+	Server string   `json:"server"`
+	Client []string `json:"client"`
+}
+
+type Relationship struct {
+	Leader int `json:"leader"`
+	Self   int `json:"self"`
+}
+
+type RoundRelationship struct {
+	Round        int           `json:"round"`
+	Relationship []Relationship `json:"relationship"`
+}
+
+func processRelationships(currentRound int) error {
+	// Read edge client data for the current round
+	edgeClientListFilePath := filepath.Join("output", "edgeClientList.json")
+	data, err := ioutil.ReadFile(edgeClientListFilePath)
+	if err != nil {
+		return fmt.Errorf("error reading file %s: %v", edgeClientListFilePath, err)
+	}
+
+	var edgeClients []EdgeClient
+	err = json.Unmarshal(data, &edgeClients)
+	if err != nil {
+		return fmt.Errorf("error unmarshalling JSON from %s: %v", edgeClientListFilePath, err)
+	}
+
+	// Find edge client data for the current round
+	var roundData EdgeClient
+	for _, client := range edgeClients {
+		if client.Round == currentRound {
+			roundData = client
+			break
+		}
+	}
+
+	if roundData.Round == 0 {
+		return fmt.Errorf("no data found for round %d", currentRound)
+	}
+
+	// Read existing data from relationship.json if it exists
+	relationshipFilePath := filepath.Join("output", "relationship.json")
+	existingData, readErr := ioutil.ReadFile(relationshipFilePath)
+	var existingRelationships []RoundRelationship
+	if readErr == nil {
+		err := json.Unmarshal(existingData, &existingRelationships)
+		if err != nil {
+			return fmt.Errorf("error unmarshalling JSON from %s: %v", relationshipFilePath, err)
+		}
+	}
+
+	// Collect relationships from corresponding files
+	var relationships []Relationship
+
+	// Include the server relationship
+	serverFilePath := filepath.Join("output", fmt.Sprintf("relationship%s.json", roundData.Server[len(roundData.Server)-4:]))
+	serverData, err := ioutil.ReadFile(serverFilePath)
+	if err != nil {
+		fmt.Printf("error reading file %s: %v\n", serverFilePath, err)
+	} else {
+		var serverRelationships []Relationship
+		err := json.Unmarshal(serverData, &serverRelationships)
+		if err != nil {
+			fmt.Printf("error unmarshalling JSON from %s: %v\n", serverFilePath, err)
+		} else {
+			relationships = append(relationships, serverRelationships...)
+		}
+	}
+
+	// Include client relationships
+	for _, clientPort := range roundData.Client {
+		clientFilePath := filepath.Join("output", fmt.Sprintf("relationship%s.json", clientPort[len(clientPort)-4:]))
+		data, err := ioutil.ReadFile(clientFilePath)
+		if err != nil {
+			fmt.Printf("error reading file %s: %v\n", clientFilePath, err)
+			continue
+		}
+
+		var clientRelationships []Relationship
+		err = json.Unmarshal(data, &clientRelationships)
+		if err != nil {
+			fmt.Printf("error unmarshalling JSON from %s: %v\n", clientFilePath, err)
+			continue
+		}
+
+		relationships = append(relationships, clientRelationships...)
+	}
+
+	// Append the relationships for the current round
+	existingRelationships = append(existingRelationships, RoundRelationship{
+		Round:        currentRound,
+		Relationship: relationships,
+	})
+
+	// Write combined data to relationship.json
+	encodedData, err := json.MarshalIndent(existingRelationships, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error encoding JSON: %v", err)
+	}
+
+	err = ioutil.WriteFile(relationshipFilePath, encodedData, 0644)
+	if err != nil {
+		return fmt.Errorf("error writing file %s: %v", relationshipFilePath, err)
+	}
+
+	fmt.Printf("Relationship data written to %s\n", relationshipFilePath)
+	return nil
+}
+
 
 func on_recv_gossip_msg(msg dual.GossipMessage) {
 	//fmt.Printf("on_recv_gossip_msg msg.Type:%v \n",msg.Type)
@@ -800,7 +952,8 @@ func create_edge_client_list_json(arr map[string]dual.Subscriber, cur_round int)
 
 	var rounds []Round
 	if append_to_file {
-		jsonData, err := os.ReadFile("EdgeClientList.json")
+		filePath := filepath.Join("output", "edgeClientList.json")
+		jsonData, err := os.ReadFile(filePath)
 		if err != nil {
 			fmt.Println("Error reading file:", err)
 			return
@@ -821,8 +974,10 @@ func create_edge_client_list_json(arr map[string]dual.Subscriber, cur_round int)
 		return
 	}
 
+	filePath := filepath.Join("output", "edgeClientList.json")
+
 	// Write the updated JSON to the file
-	errt = os.WriteFile("EdgeClientList.json", jsonData, 0644)
+	errt = os.WriteFile(filePath, jsonData, 0644)
 	if errt != nil {
 		fmt.Println("Error writing file:", errt)
 		return
@@ -869,6 +1024,25 @@ func on_start_train_one_round(modelMetaData []byte) {
 	ptr := unsafe.Pointer(&modelMetaData[0])
 	C.call_c_func(callbacks.on_starttrain, (*C.char)(ptr))
 	C.call_c_func(callbacks.on_trainmymodel, (*C.char)(ptr))
+
+}
+
+// JL
+var mu sync.Mutex
+
+func on_generate_relationship() {
+	leader := overlay.GetLeader()
+	fmt.Printf("test_on_generate_relationship, myself %s, myleader %s \n", node.ID().Address, leader)
+	leaderInt, err1 := strconv.Atoi(leader[1:])
+	fmt.Println(leaderInt)
+
+	if err1 != nil {
+		fmt.Println("Error converting leader to int:", err1)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+
+	C.call_c_func2(callbacks.on_generateleader, (C.int)(leaderInt))
 
 }
 
@@ -979,7 +1153,7 @@ func on_report(p2pmsg dual.P2pMessage) {
 			C.call_c_func(callbacks.on_clientupdatedone_publisher, (*C.char)(ptr))
 
 			duration := time.Since(starttime)
-			fmt.Printf("DONE round %d training. time:%s\n", current_round, duration)
+			fmt.Printf("DONE round %d training. time:%s\n", current_round-1, duration)
 		}
 
 		if msg.Opcode == OP_CLIENT_EVAL {
@@ -994,7 +1168,7 @@ func on_report(p2pmsg dual.P2pMessage) {
 				pjt.SetPjtState(dual.STATE_COMMITTED)
 			}
 			duration := time.Since(starttime)
-			fmt.Printf("DONE round %d evaluation. time:%s\n", current_round, duration)
+			fmt.Printf("DONE round %d evaluation. time:%s\n", current_round-1, duration)
 		}
 
 		return
@@ -1687,6 +1861,9 @@ func init_p2p(host string, port int, serveraddr string) {
 		OnSelectPeers: on_select_peers,
 
 		OnStartTrainOneRound: on_start_train_one_round,
+
+		//JL
+		OnGenerateRelationship: on_generate_relationship,
 	}
 
 	overlay = dual.New(dual.WithProtocolEvents(events),
@@ -1929,7 +2106,8 @@ type RegroupData struct {
 
 //export Regroup
 func Regroup(src *C.char, size C.int, next_round int) {
-	fmt.Printf("Regroup() Start\n")
+	fmt.Println("Regroup() Start in I1 and next_round is \n", next_round)
+
 	modelData := C.GoBytes(unsafe.Pointer(src), C.int(size))
 
 	//JL

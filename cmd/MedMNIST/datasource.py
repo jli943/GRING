@@ -3,6 +3,7 @@ import torchvision.transforms as transforms
 
 import medmnist
 from medmnist import INFO
+import random
 
 download = True
 
@@ -13,7 +14,32 @@ class DataSource(object):
     def __init__(self):
         raise NotImplementedError()
     def partitioned_by_rows(self, num_workers, test_reserve=.3):
-        raise NotImplementedError()
+        info = INFO[self.data_flag]
+        DataClass = getattr(medmnist, info['python_class'])
+
+        # preprocessing
+        data_transform = transforms.Compose([
+                         transforms.ToTensor(),
+                         transforms.Normalize(mean=[.5], std=[.5])
+	])
+
+        # load the data
+        train_dataset = DataClass(split='train', transform=data_transform, download=download)
+        
+        num_train = len(train_dataset)
+        selected_train_indices = random.sample(range(num_train), int(num_train//num_workers))
+        selected_train_dataset = data.Subset(train_dataset, selected_train_indices)
+
+        # num_test = len(self.test_dataset)
+        # selected_test_indices = random.sample(range(num_test), int(num_test//num_workers))
+        # selected_test_dataset = data.Subset(self.test_dataset, selected_test_indices)
+
+        self.train_loader = data.DataLoader(dataset=selected_train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+        self.valid_loader = data.DataLoader(dataset=selected_train_dataset, batch_size=2*BATCH_SIZE, shuffle=False)
+        print("IID-Data:")
+        print("Train:", len(selected_train_dataset))
+        print("===================")
+
     def sample_single_non_iid(self, weight=None):
         raise NotImplementedError()
 
@@ -53,6 +79,22 @@ class MedMNIST(DataSource):
 
 if __name__ == "__main__":
     m = MedMNIST()
+    print("===================")
+    for inputs, targets in m.train_loader:
+        print(inputs)
+        print(targets)
+        print(m.task)
+        break
+    print("===================")
+    m.partitioned_by_rows(1000)
+    print("===================")
+    for inputs, targets in m.train_loader:
+        print(inputs)
+        print(targets)
+        print(m.task)
+        break
+    print("===================")
+
 
 # import torch.utils.data as data
 # import torchvision.transforms as transforms
