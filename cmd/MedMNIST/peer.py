@@ -29,9 +29,9 @@ FUNC = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_char_p)
 FUNC2 = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
 
 # TODO : let Publisher set total training rounds
-NUM_GLOBAL_ROUNDS = 2
+NUM_GLOBAL_ROUNDS = 10
 NUM_LOCAL_EPOCHS = 1  # at each local node
-PARTITION = 100
+PARTITION = 10
 
 # training variables  -------------
 lr = 0.001
@@ -359,7 +359,10 @@ class FederatedClient(object):
 
             # JL save to Initiator.json
             # Assuming self.port contains the port number
-            json_filename = f"peer{self.port}.json"
+            port = str(self.port)
+            port = port[-2:]
+            port = int(port)
+            json_filename = f"node{port}_localModel.json"
 
             # Specify the path to the "output/" folder and the filename
             output_path = "output"
@@ -597,7 +600,10 @@ class FederatedClient(object):
 
             # JL save to Subleader.json
             # Assuming self.port contains the port number
-            json_filename = f"peer{self.port}.json"
+            port = str(self.port)
+            port = port[-2:]
+            port = int(port)
+            json_filename = f"node{port}_localModel.json"
             output_path = "output"
             json_filepath = os.path.join(output_path, json_filename)
 
@@ -695,7 +701,10 @@ class FederatedClient(object):
 
             # JL save to Worker.json
             # Assuming self.port contains the port number
-            json_filename = f"peer{self.port}.json"
+            port = str(self.port)
+            port = port[-2:]
+            port = int(port)
+            json_filename = f"node{port}_localModel.json"
             output_path = "output"
             json_filepath = os.path.join(output_path, json_filename)
 
@@ -972,14 +981,21 @@ class FederatedClient(object):
 
                 # Assuming self.port contains the port number
                 # json_filename = "relationship.json"
-                json_filename = f"relationship{self.port}.json"
+                port = str(self.port)
+                port = port[-2:]
+                port = int(port)
+                json_filename = f"relationship{port}.json"
                 output_path = "output"
                 json_filepath = os.path.join(output_path, json_filename)
+
+                leader = str(leader)
+                leader = leader[-2:]
+                leader = int(leader)
 
                 # Create a dictionary for the current leader information
                 leader_data = {
                     "leader": leader,
-                    "self": self.port
+                    "self": port
                     # "round": self.current_round
                 }
 

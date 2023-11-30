@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -33,8 +35,6 @@ import (
 	"sync"
 	"time"
 	"unsafe"
-	"log"
-	"io/ioutil"
 
 	"github.com/git-disl/GRING"
 	"github.com/git-disl/GRING/dual"
@@ -668,14 +668,30 @@ func on_group_done(p2pmsg dual.P2pMessage) {
 	}
 
 	processRelationships(current_round)
-	
+
 	current_round = current_round + 1
 }
 
-type EdgeClient struct {
-	Round  int      `json:"round"`
-	Server string   `json:"server"`
-	Client []string `json:"client"`
+
+type NodeInfo struct {
+	IP   string `json:"ip"`
+	Port int    `json:"port"`
+}
+
+type NodeList struct {
+	NodeID   int      `json:"node_id"`
+	NodeInfo NodeInfo `json:"node_info"`
+}
+
+type EdgeClientRound struct {
+	Client []int `json:"client"`
+	Round  int   `json:"round"`
+	Server int   `json:"server"`
+}
+
+type EdgeClientData struct {
+	NodeList []NodeList      `json:"node_list"`
+	Rounds   []EdgeClientRound `json:"rounds"`
 }
 
 type Relationship struct {
@@ -696,17 +712,18 @@ func processRelationships(currentRound int) error {
 		return fmt.Errorf("error reading file %s: %v", edgeClientListFilePath, err)
 	}
 
-	var edgeClients []EdgeClient
-	err = json.Unmarshal(data, &edgeClients)
+	var edgeClientData EdgeClientData // Create a new struct to hold the data
+
+	err = json.Unmarshal(data, &edgeClientData)
 	if err != nil {
 		return fmt.Errorf("error unmarshalling JSON from %s: %v", edgeClientListFilePath, err)
 	}
 
 	// Find edge client data for the current round
-	var roundData EdgeClient
-	for _, client := range edgeClients {
-		if client.Round == currentRound {
-			roundData = client
+	var roundData EdgeClientRound
+	for _, round := range edgeClientData.Rounds {
+		if round.Round == currentRound {
+			roundData = round
 			break
 		}
 	}
@@ -730,7 +747,7 @@ func processRelationships(currentRound int) error {
 	var relationships []Relationship
 
 	// Include the server relationship
-	serverFilePath := filepath.Join("output", fmt.Sprintf("relationship%s.json", roundData.Server[len(roundData.Server)-4:]))
+	serverFilePath := filepath.Join("output", fmt.Sprintf("relationship%d.json", roundData.Server))
 	serverData, err := ioutil.ReadFile(serverFilePath)
 	if err != nil {
 		fmt.Printf("error reading file %s: %v\n", serverFilePath, err)
@@ -745,8 +762,8 @@ func processRelationships(currentRound int) error {
 	}
 
 	// Include client relationships
-	for _, clientPort := range roundData.Client {
-		clientFilePath := filepath.Join("output", fmt.Sprintf("relationship%s.json", clientPort[len(clientPort)-4:]))
+	for _, clientID := range roundData.Client {
+		clientFilePath := filepath.Join("output", fmt.Sprintf("relationship%d.json", clientID))
 		data, err := ioutil.ReadFile(clientFilePath)
 		if err != nil {
 			fmt.Printf("error reading file %s: %v\n", clientFilePath, err)
@@ -783,7 +800,6 @@ func processRelationships(currentRound int) error {
 	fmt.Printf("Relationship data written to %s\n", relationshipFilePath)
 	return nil
 }
-
 
 func on_recv_gossip_msg(msg dual.GossipMessage) {
 	//fmt.Printf("on_recv_gossip_msg msg.Type:%v \n",msg.Type)
@@ -929,63 +945,79 @@ func myfedcomputationpullreq(msg dual.GossipMessage, ctx GRING.HandlerContext) {
 
 // JL
 type Round struct {
-	RoundNum int      `json:"round"`
-	Server   string   `json:"server"`
-	Clients  []string `json:"client"`
+	RoundNum int   `json:"round"`
+	Server   int   `json:"server"`
+	Clients  []int `json:"client"`
 }
 
-// JL Create a new EdgeClientList.json file to print the nodes participating in a particular round
-func create_edge_client_list_json(arr map[string]dual.Subscriber, cur_round int) {
-	append_to_file := false
-	if cur_round > 1 {
-		append_to_file = true
-	}
-	var clients []string
-	var initiator_address string
-	for _, value := range arr {
-		if value.Key == node.ID().ID.String() {
-			initiator_address = value.Addr
-			continue
-		}
-		clients = append(clients, value.Addr)
-	}
+type RoundsWrapper struct {
+	Rounds []Round `json:"rounds"`
+}
 
-	var rounds []Round
-	if append_to_file {
-		filePath := filepath.Join("output", "edgeClientList.json")
-		jsonData, err := os.ReadFile(filePath)
+func create_edge_client_list_json(arr map[string]dual.Subscriber, cur_round int) {
+	var initiator_address int
+	var clients []int
+
+	for _, value := range arr {
+		lastTwoChars := value.Addr[len(value.Addr)-2:]
+		lastTwoInt, err := strconv.Atoi(lastTwoChars)
 		if err != nil {
-			fmt.Println("Error reading file:", err)
+			fmt.Println("Error:", err)
 			return
 		}
-		err = json.Unmarshal(jsonData, &rounds)
+
+		if value.Key == node.ID().ID.String() {
+			initiator_address = lastTwoInt
+			continue
+		}
+
+		clients = append(clients, lastTwoInt)
+	}
+
+	// Read the existing JSON file
+	filePath := filepath.Join("output", "edgeClientList.json")
+	fileData, err := ioutil.ReadFile(filePath)
+
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Println("Error reading file:", err)
+		return
+	}
+
+	var existingData map[string]interface{}
+	if fileData != nil {
+		err = json.Unmarshal(fileData, &existingData)
 		if err != nil {
 			fmt.Println("Error decoding JSON:", err)
 			return
 		}
+	} else {
+		// Create an empty JSON object with an empty "rounds" array
+		existingData = make(map[string]interface{})
+		existingData["rounds"] = []interface{}{}
 	}
-	round := Round{RoundNum: cur_round, Server: initiator_address, Clients: clients}
-	rounds = append(rounds, round)
 
-	// Encode the slice as JSON
-	jsonData, errt := json.MarshalIndent(rounds, "", "  ")
-	if errt != nil {
-		fmt.Println("Error encoding JSON:", errt)
+	// Create a new round object
+	round := Round{RoundNum: cur_round, Server: initiator_address, Clients: clients}
+
+	// Add the new round to the existing rounds array
+	existingData["rounds"] = append(existingData["rounds"].([]interface{}), round)
+
+	// Marshal the updated JSON data back to JSON
+	updatedJSONData, err := json.MarshalIndent(existingData, "", "  ")
+	if err != nil {
+		fmt.Println("Error encoding JSON:", err)
 		return
 	}
 
-	filePath := filepath.Join("output", "edgeClientList.json")
-
 	// Write the updated JSON to the file
-	errt = os.WriteFile(filePath, jsonData, 0644)
-	if errt != nil {
-		fmt.Println("Error writing file:", errt)
+	err = ioutil.WriteFile(filePath, updatedJSONData, 0644)
+	if err != nil {
+		fmt.Println("Error writing file:", err)
 		return
 	}
 
 	fmt.Println("JSON file written successfully!")
 }
-
 // JL
 func on_select_peers(pubSubList map[string]dual.Subscriber, nextRound int) map[string]dual.Subscriber {
 	randomPeers := make(map[string]dual.Subscriber)
